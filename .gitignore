@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.log
+*.bak-*
+/data/
+/results/
+*.engine
+*.onnx
+*.pt
+*.pth
+*.ts
+.env
