@@ -291,22 +291,10 @@ class YoloeModel:
         max_detections_per_prompt: int,
         min_box_area: float = 100.0,
     ) -> None:
-        # ⚠️ 先限制线程数，再 import ultralytics（它会 import torch）。
-        #
-        # 为什么必须限：YOLOE 走纯 PyTorch，卷积的 CPU 部分由 OpenMP 并行，
-        # 默认会把**全部 12 个核**占满。而 Odin 相机驱动的 enqueue_callback_data
-        # 是回调线程，要 CPU 及时响应才能把数据从 SDK 队列里取走——被饿死之后
-        # 五个队列（RGB / TF_ODOM / DTOF / PC2XYZRGBA / WIWC）全满开始丢数据，
-        # 进而里程计断续、桥接报 "Odometry not ready, skipping depth callback"。
-        # 2026-09-12 真机实测：只起 Odin + YOLOE 引擎（不起 SnowNav、不开 rviz）
-        # 就能复现，换回 nanoowl 后端（走 TensorRT，CPU 基本闲着）则没有。
-        #
-        # 限到 4 个线程：YOLOE 的主体计算在 GPU 上，CPU 只做预处理和掩码后处理，
-        # 而相机才 6 Hz、引擎单帧 70ms，富余一倍以上，慢一点完全无所谓。
-        # 想调用环境变量 YOLOE_TORCH_THREADS。
-        #
-        # OMP_NUM_THREADS 必须在 import torch **之前**设才有效（OpenMP 在 import
-        # 时就初始化了），所以启动脚本那边也设了一份，这里是兜底。
+        # 规则：YOLOE 引擎与 Odin 相机驱动同机运行时必须限制 OMP/BLAS 线程数，否则
+        # YOLOE（纯 PyTorch，CPU 卷积由 OpenMP 占满所有核）会和 Odin 驱动的回调线程
+        # 抢核，抢不到就丢帧、掉线；下面几行就是干这个的（限 4 线程即可，GPU 才是
+        # YOLOE 主要算力；需在 import torch 前设置才生效，启动脚本里也设了一份兜底）。
         _n_threads = int(os.environ.get("YOLOE_TORCH_THREADS", "4"))
         os.environ.setdefault("OMP_NUM_THREADS", str(_n_threads))
         os.environ.setdefault("MKL_NUM_THREADS", str(_n_threads))

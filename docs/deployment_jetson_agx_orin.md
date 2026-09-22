@@ -1,8 +1,8 @@
 # nano_perception 部署与验证手册
 
-> 本文档面向"把 nano_perception 部署到另一台 Jetson 机器人"的场景：包含架构说明、环境构建、部署步骤、参数开关、**踩坑与解决方案**、实机验证记录（已并入原 `results/RESULTS.md` 全部内容，原文保留）。
+> 本文档面向"把 nano_perception 部署到另一台 Jetson 机器人"的场景：包含架构说明、环境构建、部署步骤、参数开关、**踩坑与解决方案**。
 >
-> 基准机器：ubuntu（Jetson AGX Orin，JetPack 5.1.3），2026-08-21 状态。
+> 基准机器：ubuntu（Jetson AGX Orin，JetPack 5.1.3），以最近一次真机实测为准。
 
 ---
 
@@ -133,7 +133,7 @@ bash start_nano_perception.sh   # Ctrl-C 一键收掉两个进程
 | ENGINE_PORT | 8891 | 引擎 HTTP 端口 |
 | SAVE_DIR | 空 | 非空时 bridge 把 overlay 图 + JSON 摘要成对落盘（约 2.6 对/秒 × 0.35MB ≈ 3.3GB/小时，用完记得关） |
 | SAVE_RAW_FRAMES | 0 | 1 = 额外存原始相机帧 raw_*.jpg（离线阈值扫描用） |
-| CONFIDENCE_THRESHOLD | 0.08 | 检测分数阈值（0.08 是实测甜点：0 空帧、分数压线分布，见 §6.1） |
+| CONFIDENCE_THRESHOLD | 0.08 | 检测分数阈值（0.08 是实测甜点：0 空帧、分数压线分布） |
 | MIN_BOX_AREA | 100 | 小框面积过滤（768 高坐标系 px²，约合原图 285px²） |
 | MAX_RATE | 10 | bridge 发布节流上限（Hz）；实际发布由引擎耗时决定 |
 | MASK_CODEC | rle | 掩码编码：rle=游程（最快，默认）/ fast=torchvision PNG / pil=旧 PIL PNG（回退） |
@@ -170,88 +170,9 @@ bash start_nano_perception.sh   # Ctrl-C 一键收掉两个进程
 | 5.10 | 多话题同步卡死 | 用 ApproximateTimeSynchronizer 同步 image/cloud 永远等不到 | odin1 图像话题混用两种时间戳：多数是传感器相对时钟（几百秒量级），每隔几条混一条墙钟 Unix 秒，按头时间戳同步被墙钟消息永久卡死 | 多话题同步**按回调到达时间对齐**，不要按 header 时间戳（参考工具 quadruped_workbench/go2_software/tools/capture_odin1_frame.py） |
 | 5.11 | TRT 警告"Using an engine plan file across different models of devices" | 引擎日志反复出现该警告 | engine 文件带设备指纹，跨 JetPack/设备跑不保证正确 | 换 JetPack 版本/换机型必须**重新导出 engine**；同机同版本该警告可忽略 |
 | 5.12 | 清理进程误杀 | 清"孤儿进程"把健康引擎/其他服务也杀了 | pgrep/pkill 宽匹配抓到无关进程（含自己的 bash 包装） | 精确匹配：`ps -eo pid,cmd \| awk '$2=="/usr/bin/python3" && $0 ~ /nano_perception_bridge\.py/'`；注意 bash 后台任务"completed"通知 ≠ 进程真死（孤儿进程会继续跑） |
-| 5.13 | 空帧率高达 68-72% | 室内场景几乎每帧无检测 | 默认阈值 0.1 时模型分数整体压线（median 仅 0.121），阈值恰好卡掉大量候选 | 阈值降到 0.08（实测 0 空帧、检测分布正常）；详见 §6.1 的 4 档扫描数据 |
+| 5.13 | 空帧率高达 68-72% | 室内场景几乎每帧无检测 | 默认阈值 0.1 时模型分数整体压线（median 仅 0.121），阈值恰好卡掉大量候选 | 阈值降到 0.08（实测 0 空帧、检测分布正常）；参数说明见 §4.1 |
 | 5.14 | cv2.LUT 断言失败 | OpenCV 报 lut.cpp Assertion failed (lutcn==cn) | OpenCV 4.x 的 cv2.LUT 不支持"单通道输入 → 3 通道输出" | 用 numpy 索引查表替代（`palette[idx_map]`），更快且无版本限制 |
 | 5.15 | 高发布频率调优 | bridge 串行时发布只有 ~3Hz，bridge CPU 才 15% | 每帧桥端固定开销（大图 JPEG 编码 + 逐掩码全分辨率放大/染色 ~180ms）与引擎推理（~120ms）**串行叠加** | 已内置 4 项优化：RLE 解码向量化（np.repeat）、掩码合并成索引图一次放大 + numpy 查表染色、2 帧在飞线程池流水线、引擎空闲预测。实测 3.3Hz → 4.6-5.4Hz；剩余瓶颈是引擎单帧占用（~140-200ms），硬上限约 7Hz |
-
----
-
-## 6. 实机验证记录（原 results/RESULTS.md 并入）
-
-基准机：ubuntu（Jetson AGX Orin，JP5.1.3），2026-08-21。
-
-### 6.1 识别率调参（threshold=0.08 定案）
-
-实机存盘 2599 帧分析：1034 个检测的分数 median 仅 0.121，99.7% < 0.2——模型分数整体压线，阈值 0.1 恰好卡掉大量候选（空帧率高的主因）。次要因素：小框面积过滤 100px²（768 高坐标系，约合原图 285px²）。
-
-35 帧实机原帧 × 4 档阈值离线扫描（threshold_scan.py）：
-
-| 阈值 | 总框 | 空帧 | 分数 median | 端到端（full 模式 2 帧） |
-|---|---|---|---|---|
-| 0.02 | 902 | 0/35 | 0.038 | 964-982 ms（~1 Hz，不可用） |
-| 0.05 | 309 | 0/35 | 0.081 | 337-346 ms（~3 Hz） |
-| **0.08（选定）** | **158** | **0/35** | **0.117** | **217-226 ms（~4.5 Hz）** |
-| 0.10（旧默认） | 110 | 0/35 | 0.142 | 192-198 ms（~5 Hz） |
-
-小框过滤对 ≥0.05 档几乎无影响（每帧只吞 0~1 框），保持 100px²。
-
-### 6.2 0.08 实机短跑（97 帧，与驱动并发）
-
-| 指标 | 数值 |
-|---|---|
-| 空帧率 | 0%（基线 0.1 时 68-72%） |
-| 每帧检测数 | mean 5.6 / median 6 / max 9 |
-| 分数分布 | min 0.080 / median 0.115 / max 0.191；31% 落在 [0.08,0.1) |
-| engine_ms | mean 236 / median 238 / p95 310（加速前基线） |
-| 每类检测 | person 400、garbage can 79、monitor 46、chair 19 |
-
-### 6.3 链路配置与 4 topic 实测（加速前）
-
-- 相机：odin1（USB 2207:0019 Fuzhou Rockchip），驱动 `roslaunch odin_ros_driver odin1_ros1_norviz.launch`，10.27Hz、1600x1296 bgr8
-- 实测发布 2.58Hz（当时 max_rate=5 节流 + 引擎 236ms 串行）
-- 4 topic 全通；捕获到真实检测：tv score=0.105
-
-### 6.4 benchmark（实机帧，20 轮）
-
-| 指标 | 均值 | 中位数 | p95 |
-|---|---|---|---|
-| 端到端 | 102.9 ms（约 9.7 Hz） | 109.7 ms | 132.6 ms |
-| OWL 检测 | 51.8 ms | 58.3 ms | 76.0 ms |
-| SAM 全图编码 | 26.6 ms | 24.9 ms | 32.8 ms |
-
-（该轮输入帧无检测框，无逐框解码耗时；本地图基线 121.4ms 端到端。）
-
-### 6.5 管线加速 V0-V6（GPU 锁频后）
-
-改动清单（全部带 env 开关可回退）：
-
-| 改动 | 开关 | 说明 |
-|---|---|---|
-| 掩码 RLE 游程编码 | `MASK_CODEC=rle`（默认）/`pil`/`fast` | 替代 PIL PNG+base64，编码亚毫秒级；bridge 端 `rle:` 前缀分派解码 |
-| SAM 预处理 GPU 化 | `SAM_PREPROC=fast`（默认）/`legacy` | uint8 H2D + GPU bicubic + GPU 归一化，26.5ms → ~7-9ms |
-| 懒发布 | 无 | 4 个 publisher 无订阅者时跳过消息构造（get_num_connections 每帧实时查询） |
-| 节流参数化 | `MAX_RATE=10`（默认） | 之前硬编码 5Hz |
-| bridge 流水线 | 无 | RLE 解码向量化 + 掩码合并放大 + 2 帧在飞 + 引擎空闲预测（见 §5.15） |
-
-离线回退演练（taskset -c 0-3、同图 20 轮）：
-
-| 组 | 配置 | engine_ms |
-|---|---|---|
-| 组 1 | legacy + pil（旧路径） | 140.5 ms |
-| 组 2 | fast + rle（新路径） | 89.7 ms |
-| 组 3 | legacy + rle（混合） | 109.8 ms |
-
-**V4 实机**（存盘 149 帧，MAX_RATE=8）：engine_ms mean 117.9 / median 115.1 / p95 148.7（基线 236ms，**-50%**）；空帧率 0/149；检测分布与基线一致（person 577 = 3.9/帧）。
-
-**轮 B 实机**（无存盘，MAX_RATE=10）：engine_ms 83-123ms；发布频率经 bridge 优化 3.3Hz → 4.6-5.4Hz；检测正常、无告警。8Hz 预期未达（剩余瓶颈 = 引擎单帧占用 ~140-200ms），用户拍板当前频率可接受。
-
-**prompts 定案 6 类**：`person, chair, bottle, garbage can, fire hydrant, pen`（两仓库 prompts 文件 + 两 bridge 的 DEFAULT_PROMPTS/PALETTE_BGR 同步）。
-
-### 6.6 存盘文件说明
-
-- `<设备时钟秒>.<纳秒>.jpg` / `.json` 成对：overlay 叠加图 + 检测摘要（stamp_ns 与文件名一致）
-- `raw_<stamp>.jpg`：SAVE_RAW_FRAMES=1 时的原始相机帧
-- 增长速度约 2.6 对/秒 × 0.35MB ≈ 3.3GB/小时（停止存盘：不带 SAVE_DIR 重启管线）
 
 ---
 
@@ -263,7 +184,7 @@ bash start_nano_perception.sh   # Ctrl-C 一键收掉两个进程
 | SAM 预处理异常 | `SAM_PREPROC=legacy` 重启管线 |
 | 频率/CPU 异常 | `MAX_RATE=5` 降节流 |
 | 文件级回退 | results/baseline_backup/ 保存了加速改动前的 engine/bridge/predictor 三文件 |
-| 检测跑偏 | 阈值 `CONFIDENCE_THRESHOLD` 与 `MIN_BOX_AREA` 回扫（§6.1 有 4 档数据） |
+| 检测跑偏 | 阈值 `CONFIDENCE_THRESHOLD` 与 `MIN_BOX_AREA` 回扫（参数说明见 §4.1） |
 | prompts 回退 | 两仓库 prompts 文件 + 两 bridge 的 DEFAULT_PROMPTS 三处一起改 |
 
 ---
