@@ -1,6 +1,6 @@
 [submodule "nanoowl"]
 	path = nanoowl
-	url = git@github.com:gogojjh/robohike-nanoowl.git
+	url = git@github.com:gogojjh/nanoowl.git
 [submodule "nanosam"]
 	path = nanosam
-	url = git@github.com:gogojjh/robohike-nanosam.git
+	url = git@github.com:gogojjh/nanosam.git
