@@ -403,7 +403,7 @@ class EngineHTTPServer(ThreadingHTTPServer):
         self.model = model
         self.busy = threading.Lock()
         self.default_threshold = default_threshold
-        # /health 会把它报出去，好让上游（start_snownav_go2.sh）知道该不该传分数尺子：
+        # /health 会把它报出去，好让上游（start_objectnav_go2.sh）知道该不该传分数尺子：
         # nanoowl 的原始分挤在 0.02~0.20 必须拉伸，yoloe 出的已经是标准 0~1，
         # 再过一遍 ScoreRemapper 就是二次拉伸、分数全乱。
         self.backend = backend
