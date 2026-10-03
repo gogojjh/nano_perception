@@ -37,7 +37,7 @@ nano_perception_engine.py（conda env nano_perception + TensorRT）
 | masks | sensor_msgs/Image (mono16) | 位掩码图：像素值 = Σ 2^i，第 i 类命中 bit i |
 | engine_latency | std_msgs/Float64 | 引擎单帧耗时 ms |
 
-**引擎 `/infer` 协议**：请求 `{image_b64, prompts, confidence_threshold}`；响应 `{engine_ms, server_ms, results: [{prompt, scores, boxes, masks_png_b64}]}`。掩码字段名保留旧名但内容是 `rle:` 前缀的 base64 游程编码（uint32 小端 `[h, w, run0, run1, ...]`，段值 0 起交替）；无前缀 = 旧 PNG 格式（引擎/bridge 双向兼容，滚动部署零破坏）。
+**引擎 `/infer` 协议**：请求 `{image_b64, prompts, confidence_threshold}`，另有两个可选字段只 yoloe 后端认：`retina_masks`（true = 掩码直接放大到原图再切边）、`imgsz`（推理输入尺寸，默认 640）；不传时行为不变。2026-10-03 在 Orin 上用 640×480 的图实测：`retina_masks` 和默认逐像素相同（输入本来就是原图大小），`imgsz=1280` 慢约 2.5 倍、和 SAM-L 掩码的吻合度反而下降，所以调用方（如 scene_graph_mapping 建图）默认都不开；响应 `{engine_ms, server_ms, results: [{prompt, scores, boxes, masks_png_b64}]}`。掩码字段名保留旧名但内容是 `rle:` 前缀的 base64 游程编码（uint32 小端 `[h, w, run0, run1, ...]`，段值 0 起交替）；无前缀 = 旧 PNG 格式（引擎/bridge 双向兼容，滚动部署零破坏）。
 
 ---
 

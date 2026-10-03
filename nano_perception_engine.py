@@ -6,7 +6,9 @@
 接口：
   GET  /health -> {"status": "ready"}（预热完成后才 ready）
   POST /infer  body: {"image_b64": "<jpeg base64>", "prompts": [...],
-                      "confidence_threshold": 0.1}
+                      "confidence_threshold": 0.1,
+                      "retina_masks": false, "imgsz": null}   # 后两个可选,只 yoloe 后端认
+
                -> {"engine_ms": ..., "detect_ms": ..., "sam_encode_ms": ...,
                    "sam_decode_ms": ...,
                    "results": [{"prompt", "scores", "boxes", "masks_png_b64"}]}
@@ -178,7 +180,10 @@ class NanoPerceptionModel:
         image_pil: Image.Image,
         prompts: List[str],
         confidence_threshold: float,
+        retina_masks: bool = False,
+        imgsz: Optional[int] = None,
     ) -> Dict:
+        """retina_masks / imgsz 只有 yoloe 后端认,这里收下但不用(NanoOWL 自己按高 image_height 缩放)。"""
         t0 = time.perf_counter()
 
         # 1. 等比缩放到高 image_height，记原图尺寸用于坐标/掩码还原
@@ -327,16 +332,25 @@ class YoloeModel:
         image_pil: Image.Image,
         prompts: List[str],
         confidence_threshold: float,
+        retina_masks: bool = False,
+        imgsz: Optional[int] = None,
     ) -> Dict:
+        """retina_masks=True:掩码直接放大到原图再切边(边缘更顺,底图分辨率不变);
+        imgsz:推理输入尺寸(默认 ultralytics 的 640;调大底图跟着变细,耗时约按面积涨)。
+        两项不传时和原来完全一样;掩码不是原图大小时由调用方自己缩放(游程编码开头就写着掩码的高和宽)。
+        """
         t0 = time.perf_counter()
         self.set_classes_cached(prompts)
         t1 = time.perf_counter()
 
         # 传 PIL 而不是 numpy：ultralytics 对 numpy 数组按 BGR 解释、对 PIL 按 RGB，
         # 传 PIL 就不用操心通道顺序（搞反了分数会明显下降）。
+        extra: Dict = {"retina_masks": True} if retina_masks else {}
+        if imgsz:
+            extra["imgsz"] = int(imgsz)
         out = self.model.predict(
             image_pil, conf=confidence_threshold, half=True,
-            device=0 if self.device == "cuda" else self.device, verbose=False,
+            device=0 if self.device == "cuda" else self.device, verbose=False, **extra,
         )[0]
         t2 = time.perf_counter()
 
@@ -447,8 +461,13 @@ class _Handler(BaseHTTPRequestHandler):
             confidence_threshold = float(
                 payload.get("confidence_threshold", server.default_threshold)
             )
+            imgsz = payload.get("imgsz")
             t0 = time.perf_counter()
-            result = server.model.infer(image_pil, prompts, confidence_threshold)
+            result = server.model.infer(
+                image_pil, prompts, confidence_threshold,
+                retina_masks=bool(payload.get("retina_masks", False)),
+                imgsz=int(imgsz) if imgsz else None,
+            )
             result["server_ms"] = (time.perf_counter() - t0) * 1000.0
             self._reply(200, result)
         except Exception as exc:  # 单次推理失败不拖垮服务
